@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: zepvm
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: ZEPVM_PASSWORD
+        sync: false
+      - key: ZEPVM_CWD
+        value: /tmp
