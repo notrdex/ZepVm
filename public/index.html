@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>ZepVm Console</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin:0; width:100%; height:100%; background:#070a0f; color:#e7edf5; font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif; }
+    body { display:flex; align-items:center; justify-content:center; padding:16px; }
+    .shell { width:min(1100px,100%); height:min(720px,92vh); min-height:430px; background:#080c12; border:1px solid #1a2432; border-radius:16px; box-shadow:0 18px 60px #0008; overflow:hidden; display:flex; flex-direction:column; }
+    .top { height:58px; display:flex; align-items:center; justify-content:space-between; padding:0 12px; border-bottom:1px solid #17202d; background:#0b1018; }
+    .brand { display:flex; align-items:center; gap:9px; min-width:0; }
+    .dot { width:9px; height:9px; border-radius:50%; background:#20e27a; box-shadow:0 0 12px #20e27a; }
+    .title { font-weight:700; white-space:nowrap; }
+    .status { color:#8e9aaa; font-size:12px; }
+    .actions { display:flex; gap:7px; }
+    button { border:1px solid #243044; background:#111927; color:#d8e0ea; border-radius:8px; padding:8px 11px; cursor:pointer; }
+    button:hover { background:#172235; }
+    .terminal-wrap { flex:1; min-height:0; padding:8px; }
+    #terminal { width:100%; height:100%; }
+    .bottom { height:28px; display:flex; justify-content:space-between; align-items:center; padding:0 10px; border-top:1px solid #151e2a; color:#778396; font-size:11px; }
+    .login { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; padding:20px; background:#05070b; z-index:10; }
+    .card { width:min(390px,100%); background:#0b1018; border:1px solid #1b2635; border-radius:15px; padding:24px; box-shadow:0 20px 70px #000b; }
+    .card h1 { margin:0 0 7px; font-size:22px; }
+    .card p { margin:0 0 18px; color:#8995a6; font-size:13px; }
+    input { width:100%; padding:12px; border-radius:9px; border:1px solid #253247; background:#080d14; color:#fff; outline:none; margin-bottom:10px; }
+    .login button { width:100%; }
+    .error { min-height:18px; margin-top:9px; color:#ff6b6b; font-size:12px; }
+    @media(max-width:600px) {
+      body { padding:0; }
+      .shell { width:100%; height:100%; min-height:100%; border-radius:0; border-left:0; border-right:0; }
+      .top { height:54px; }
+      .terminal-wrap { padding:5px; }
+      .bottom { height:25px; }
+      .status { display:none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="login" class="login">
+    <form id="loginForm" class="card">
+      <h1>ZepVm Console</h1>
+      <p>Secure browser terminal. Enter your ZepVm password to connect.</p>
+      <input id="password" type="password" autocomplete="current-password" placeholder="ZepVm password" autofocus>
+      <button type="submit">Connect</button>
+      <div id="error" class="error"></div>
+    </form>
+  </div>
+
+  <main class="shell">
+    <header class="top">
+      <div class="brand">
+        <span class="dot" id="dot"></span>
+        <span class="title">ZepVm Console</span>
+        <span class="status" id="status">Disconnected</span>
+      </div>
+      <div class="actions">
+        <button id="clear">Clear</button>
+        <button id="reconnect">Reconnect</button>
+      </div>
+    </header>
+
+    <section class="terminal-wrap">
+      <div id="terminal"></div>
+    </section>
+
+    <footer class="bottom">
+      <span>ZepVm • Browser PTY</span>
+      <span id="pty">PTY inactive</span>
+    </footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <script>
+    const login = document.getElementById("login");
+    const form = document.getElementById("loginForm");
+    const password = document.getElementById("password");
+    const error = document.getElementById("error");
+    const statusEl = document.getElementById("status");
+    const ptyEl = document.getElementById("pty");
+    const dot = document.getElementById("dot");
+
+    const term = new Terminal({
+      cursorBlink: true,
+      convertEol: true,
+      fontFamily: "ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace",
+      fontSize: 13,
+      theme: {
+        background: "#080c12",
+        foreground: "#d8dee9",
+        cursor: "#e7edf5",
+        selectionBackground: "#26364d"
+      }
+    });
+
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(document.getElementById("terminal"));
+    fit.fit();
+
+    let ws = null;
+    let token = sessionStorage.getItem("zepvm_token");
+
+    function setConnected(yes) {
+      statusEl.textContent = yes ? "Connected" : "Disconnected";
+      ptyEl.textContent = yes ? "PTY active" : "PTY inactive";
+      dot.style.background = yes ? "#20e27a" : "#657084";
+      dot.style.boxShadow = yes ? "0 0 12px #20e27a" : "none";
+    }
+
+    function connect() {
+      if (!token) return;
+      if (ws) try { ws.close(); } catch {}
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(proto + "//" + location.host + "/terminal", [], {
+        headers: { Authorization: "Bearer " + token }
+      });
+      // Browser WebSocket does not allow custom headers. Reconnect using query token.
+      ws.close();
+      ws = new WebSocket(proto + "//" + location.host + "/terminal?token=" + encodeURIComponent(token));
+
+      ws.onopen = () => {
+        setConnected(true);
+        fit.fit();
+        ws.send(JSON.stringify({type:"resize", cols:term.cols, rows:term.rows}));
+        term.focus();
+      };
+
+      ws.onmessage = e => term.write(e.data);
+
+      ws.onclose = () => {
+        setConnected(false);
+        term.write("\r\n\x1b[31m[Disconnected]\x1b[0m\r\n");
+      };
+
+      ws.onerror = () => setConnected(false);
+    }
+
+    term.onData(data => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({type:"input", data}));
+      }
+    });
+
+    document.getElementById("clear").onclick = () => term.clear();
+    document.getElementById("reconnect").onclick = () => connect();
+
+    window.addEventListener("resize", () => {
+      fit.fit();
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({type:"resize", cols:term.cols, rows:term.rows}));
+      }
+    });
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      error.textContent = "";
+      try {
+        const r = await fetch("/api/login", {
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({password:password.value})
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || "Login failed");
+        token = data.token;
+        sessionStorage.setItem("zepvm_token", token);
+        login.style.display = "none";
+        connect();
+      } catch (err) {
+        error.textContent = err.message;
+      }
+    });
+
+    if (token) {
+      login.style.display = "none";
+      connect();
+    }
+  </script>
+</body>
+</html>
